@@ -1,0 +1,6 @@
+{
+  "name": "甘味疊疊樂 - 日系甜點擺鐘堆疊手遊",
+  "description": "療癒日系甜點2D擺鐘疊疊樂手機遊戲，把握擺動時機釋放甜點層層堆疊，精準切除邊界與連擊狂熱回饋！",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

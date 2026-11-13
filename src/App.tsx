@@ -3,14 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { PhoneFrame } from './components/PhoneFrame.tsx';
-import { GameCanvas } from './game/GameCanvas.tsx';
+import { GameCanvas, GameCanvasHandle } from './game/GameCanvas.tsx';
 import { TopHUD } from './components/TopHUD.tsx';
+import { ItemBar } from './components/ItemBar.tsx';
 import { PauseModal } from './components/PauseModal.tsx';
 import { GameOverModal } from './components/GameOverModal.tsx';
 import { TitleMenu } from './components/TitleMenu.tsx';
-import { GameState, GameStats } from './game/types.ts';
+import { GameState, GameStats, PowerUpType } from './game/types.ts';
 import { soundManager } from './audio/soundManager.ts';
 
 export default function App() {
@@ -20,13 +21,13 @@ export default function App() {
   const [volume, setVolume] = useState<number>(soundManager.getVolume());
   const [isNewRecord, setIsNewRecord] = useState<boolean>(false);
 
-  // High score tracking
+  const canvasHandleRef = useRef<GameCanvasHandle | null>(null);
+
   const [bestScore, setBestScore] = useState<number>(() => {
-    const saved = localStorage.getItem('sweet_stack_best_score');
+    const saved = localStorage.getItem('tower_stack_best_score');
     return saved ? parseInt(saved, 10) || 0 : 0;
   });
 
-  // Current live stats
   const [stats, setStats] = useState<GameStats>({
     score: 0,
     height: 0,
@@ -35,9 +36,10 @@ export default function App() {
     currentCombo: 0,
     isFever: false,
     feverTimer: 0,
+    inventory: { slow: 1, magnet: 1, widen: 1 },
+    activePowerUps: { slowTimer: 0, magnetCharges: 0 },
   });
 
-  // Audio handlers
   const handleToggleMute = useCallback(() => {
     const newMuted = !isMuted;
     soundManager.setMuted(newMuted);
@@ -49,7 +51,6 @@ export default function App() {
     setVolume(vol);
   }, []);
 
-  // Game control handlers
   const handleStartGame = useCallback(() => {
     soundManager.playTap();
     setIsPaused(false);
@@ -80,11 +81,10 @@ export default function App() {
     setStats(finalStats);
     setGameState('GAME_OVER');
 
-    // Check high score
     if (finalStats.score > bestScore) {
       setBestScore(finalStats.score);
       setIsNewRecord(true);
-      localStorage.setItem('sweet_stack_best_score', finalStats.score.toString());
+      localStorage.setItem('tower_stack_best_score', finalStats.score.toString());
     } else {
       setIsNewRecord(false);
     }
@@ -94,7 +94,11 @@ export default function App() {
     setStats(newStats);
   }, []);
 
-  // Keyboard accessibility
+  const handleUseItem = useCallback((type: PowerUpType) => {
+    canvasHandleRef.current?.activatePowerUp(type);
+  }, []);
+
+  // Keyboard accessibility: Space/Enter to drop, 1/2/3 for items, P/Esc to pause, M to mute
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
@@ -104,24 +108,36 @@ export default function App() {
         }
       } else if (e.key === 'm' || e.key === 'M') {
         handleToggleMute();
+      } else if (gameState === 'PLAYING' && !isPaused) {
+        if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          canvasHandleRef.current?.triggerDrop();
+        } else if (e.key === '1') {
+          handleUseItem('slow');
+        } else if (e.key === '2') {
+          handleUseItem('magnet');
+        } else if (e.key === '3') {
+          handleUseItem('widen');
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [gameState, isPaused, handlePause, handleResume, handleToggleMute]);
+  }, [gameState, isPaused, handlePause, handleResume, handleToggleMute, handleUseItem]);
 
   return (
     <PhoneFrame>
       {/* 2D Canvas Game Engine */}
       <GameCanvas
+        ref={canvasHandleRef}
         gameState={gameState}
         isPaused={isPaused}
         onGameOver={handleGameOver}
         onUpdateStats={handleUpdateStats}
       />
 
-      {/* Top HUD (active during PLAYING or when PAUSED) */}
+      {/* Top HUD */}
       {gameState === 'PLAYING' && (
         <TopHUD
           stats={stats}
@@ -129,6 +145,15 @@ export default function App() {
           isMuted={isMuted}
           onToggleMute={handleToggleMute}
           onPause={handlePause}
+        />
+      )}
+
+      {/* Bottom Power-Up Item Bar */}
+      {gameState === 'PLAYING' && !isPaused && (
+        <ItemBar
+          inventory={stats.inventory}
+          activePowerUps={stats.activePowerUps}
+          onUseItem={handleUseItem}
         />
       )}
 

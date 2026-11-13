@@ -3,27 +3,37 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type DessertType =
-  | 'souffle_pancake'
-  | 'strawberry_shortcake'
-  | 'matcha_roll'
-  | 'caramel_pudding'
-  | 'french_macaron'
-  | 'honey_toast'
-  | 'chocolate_brownie'
-  | 'custard_tart'
-  | 'berry_cheesecake'
-  | 'rainbow_donut';
+export type BuildingType =
+  | 'brick_apt'
+  | 'nordic_wood'
+  | 'cafe_bistro'
+  | 'modern_glass'
+  | 'pastel_townhouse'
+  | 'retro_shophouse'
+  | 'penthouse_loft'
+  | 'japanese_machiya';
 
-export interface DessertConfig {
-  type: DessertType;
+export type PowerUpType = 'slow' | 'magnet' | 'widen';
+
+export interface ItemInventory {
+  slow: number;
+  magnet: number;
+  widen: number;
+}
+
+export interface ActivePowerUps {
+  slowTimer: number; // frames remaining (60fps -> 360 = 6s)
+  magnetCharges: number; // remaining drops with magnetic auto-align
+}
+
+export interface BuildingConfig {
+  type: BuildingType;
   name: string;
-  nameEn: string;
-  primaryColor: string;
-  secondaryColor: string;
-  accentColor: string;
+  wallColor: string;
+  wallShadeColor: string;
+  trimColor: string;
+  windowColor: string;
   height: number;
-  decorations: string[];
 }
 
 export interface Block {
@@ -32,13 +42,15 @@ export interface Block {
   y: number;
   width: number;
   height: number;
-  dessertType: DessertType;
-  primaryColor: string;
-  secondaryColor: string;
-  accentColor: string;
+  buildingType: BuildingType;
+  wallColor: string;
+  wallShadeColor: string;
+  trimColor: string;
+  windowColor: string;
   isBase?: boolean;
   cutLeft?: boolean;
   cutRight?: boolean;
+  bonusItem?: PowerUpType;
 }
 
 export interface DebrisPiece {
@@ -52,10 +64,10 @@ export interface DebrisPiece {
   rotation: number;
   vRot: number;
   alpha: number;
-  dessertType: DessertType;
-  primaryColor: string;
-  secondaryColor: string;
-  accentColor: string;
+  buildingType: BuildingType;
+  wallColor: string;
+  wallShadeColor: string;
+  trimColor: string;
 }
 
 export interface Particle {
@@ -66,7 +78,7 @@ export interface Particle {
   vy: number;
   size: number;
   color: string;
-  shape: 'star' | 'circle' | 'crumb' | 'sparkle' | 'heart';
+  shape: 'star' | 'circle' | 'crumb' | 'sparkle';
   life: number;
   maxLife: number;
   rotation: number;
@@ -100,10 +112,12 @@ export type GameState = 'MENU' | 'PLAYING' | 'PAUSED' | 'GAME_OVER';
 
 export interface GameStats {
   score: number;
-  height: number; // in floors
+  height: number;
   perfectCount: number;
   maxCombo: number;
   currentCombo: number;
   isFever: boolean;
   feverTimer: number;
+  inventory: ItemInventory;
+  activePowerUps: ActivePowerUps;
 }

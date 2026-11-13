@@ -3,12 +3,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Block, DebrisPiece, FloatingText, GameState, GameStats, Particle, Pendulum } from './types.ts';
-import { getRandomDessert, getDessertConfig } from './desserts.ts';
-import { drawDessertBlock, drawDebrisPiece, drawRoundedRect } from './dessertRenderer.ts';
+import React, { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
+import {
+  Block,
+  DebrisPiece,
+  FloatingText,
+  GameState,
+  GameStats,
+  Particle,
+  Pendulum,
+  PowerUpType,
+} from './types.ts';
+import { getRandomBuilding, getBuildingConfig, getRandomPowerUp, POWERUP_INFO } from './buildings.ts';
+import { drawBuildingBlock, drawDebrisPiece, drawRoundedRect } from './buildingRenderer.ts';
 import { soundManager } from '../audio/soundManager.ts';
-import confetti from 'canvas-confetti';
+
+export interface GameCanvasHandle {
+  activatePowerUp: (type: PowerUpType) => void;
+  triggerDrop: () => void;
+}
 
 interface GameCanvasProps {
   gameState: GameState;
@@ -17,15 +30,17 @@ interface GameCanvasProps {
   isPaused: boolean;
 }
 
-export const GameCanvas: React.FC<GameCanvasProps> = ({
+export const GameCanvas = forwardRef<GameCanvasHandle, GameCanvasProps>(({
   gameState,
   onGameOver,
   onUpdateStats,
   isPaused,
-}) => {
+}, ref) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Core mutable game loop state kept in refs for 60fps performance
+  const CANVAS_WIDTH = 380;
+  const CANVAS_HEIGHT = 680;
+
   const stateRef = useRef<{
     blocks: Block[];
     fallingBlock: Block | null;
@@ -34,7 +49,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     particles: Particle[];
     floatingTexts: FloatingText[];
     pendulum: Pendulum;
-    nextDessertType: ReturnType<typeof getRandomDessert>;
+    nextBuilding: ReturnType<typeof getRandomBuilding>;
+    nextBonusItem: PowerUpType | undefined;
     currentBlockWidth: number;
     stats: GameStats;
     cameraY: number;
@@ -42,6 +58,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     screenShake: number;
     shakeOffset: { x: number; y: number };
     isGameOverTriggered: boolean;
+    clouds: { x: number; y: number; speed: number; scale: number }[];
+    stars: { x: number; y: number; size: number; twinklePhase: number }[];
   }>({
     blocks: [],
     fallingBlock: null,
@@ -51,14 +69,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     floatingTexts: [],
     pendulum: {
       anchorX: 190,
-      anchorY: 70,
-      length: 130,
+      anchorY: 72,
+      length: 120,
       angle: 0,
       maxAngle: 0.85,
-      speed: 0.035,
+      speed: 0.034,
       phase: 0,
     },
-    nextDessertType: getRandomDessert(),
+    nextBuilding: getRandomBuilding(),
+    nextBonusItem: undefined,
     currentBlockWidth: 180,
     stats: {
       score: 0,
@@ -68,127 +87,29 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       currentCombo: 0,
       isFever: false,
       feverTimer: 0,
+      inventory: { slow: 1, magnet: 1, widen: 1 },
+      activePowerUps: { slowTimer: 0, magnetCharges: 0 },
     },
     cameraY: 0,
     targetCameraY: 0,
     screenShake: 0,
     shakeOffset: { x: 0, y: 0 },
     isGameOverTriggered: false,
+    clouds: [
+      { x: 40, y: 180, speed: 0.18, scale: 0.9 },
+      { x: 240, y: 120, speed: 0.12, scale: 1.1 },
+      { x: 150, y: 270, speed: 0.22, scale: 0.75 },
+    ],
+    stars: Array.from({ length: 32 }, () => ({
+      x: Math.random() * 380,
+      y: Math.random() * 480,
+      size: 1 + Math.random() * 1.8,
+      twinklePhase: Math.random() * Math.PI * 2,
+    })),
   });
 
-  // Base canvas resolution
-  const CANVAS_WIDTH = 380;
-  const CANVAS_HEIGHT = 680;
-
-  // Initialize a fresh game
-  const initGame = useCallback(() => {
-    const baseDessert = getDessertConfig('souffle_pancake');
-    const firstBlock: Block = {
-      id: 'base-0',
-      x: (CANVAS_WIDTH - 180) / 2,
-      y: CANVAS_HEIGHT - 90,
-      width: 180,
-      height: 42,
-      dessertType: 'souffle_pancake',
-      primaryColor: baseDessert.primaryColor,
-      secondaryColor: baseDessert.secondaryColor,
-      accentColor: baseDessert.accentColor,
-      isBase: true,
-    };
-
-    stateRef.current = {
-      blocks: [firstBlock],
-      fallingBlock: null,
-      fallingVelocity: { vx: 0, vy: 0 },
-      debris: [],
-      particles: [],
-      floatingTexts: [],
-      pendulum: {
-        anchorX: CANVAS_WIDTH / 2,
-        anchorY: 70,
-        length: 125,
-        angle: 0,
-        maxAngle: 0.85,
-        speed: 0.034,
-        phase: 0,
-      },
-      nextDessertType: getRandomDessert('souffle_pancake'),
-      currentBlockWidth: 180,
-      stats: {
-        score: 0,
-        height: 0,
-        perfectCount: 0,
-        maxCombo: 0,
-        currentCombo: 0,
-        isFever: false,
-        feverTimer: 0,
-      },
-      cameraY: 0,
-      targetCameraY: 0,
-      screenShake: 0,
-      shakeOffset: { x: 0, y: 0 },
-      isGameOverTriggered: false,
-    };
-
-    onUpdateStats(stateRef.current.stats);
-  }, [onUpdateStats]);
-
-  // Handle game state resets
-  useEffect(() => {
-    if (gameState === 'PLAYING') {
-      initGame();
-    }
-  }, [gameState, initGame]);
-
-  // Release block from pendulum
-  const handleDrop = useCallback(() => {
-    if (gameState !== 'PLAYING' || isPaused) return;
-    const s = stateRef.current;
-    if (s.fallingBlock !== null || s.isGameOverTriggered) return;
-
-    // Calculate pendulum bob position in screen coords
-    const { anchorX, anchorY, length, angle } = s.pendulum;
-    const bobX = anchorX + Math.sin(angle) * length;
-    const bobScreenY = anchorY + Math.cos(angle) * length;
-    // World Y must be screen Y minus camera offset (Y_screen = Y_world + cameraY)
-    const bobWorldY = bobScreenY - s.cameraY;
-
-    // Ensure block width strictly matches the current top block of the tower
-    const topBlock = s.blocks[s.blocks.length - 1];
-    const blockWidth = topBlock ? topBlock.width : s.currentBlockWidth;
-    s.currentBlockWidth = blockWidth;
-
-    // Release current dessert block (strictly horizontal, matching tower width)
-    const dessert = s.nextDessertType;
-    const newBlock: Block = {
-      id: `block-${s.blocks.length}`,
-      x: bobX - blockWidth / 2,
-      y: bobWorldY,
-      width: blockWidth,
-      height: dessert.height,
-      dessertType: dessert.type,
-      primaryColor: dessert.primaryColor,
-      secondaryColor: dessert.secondaryColor,
-      accentColor: dessert.accentColor,
-    };
-
-    s.fallingBlock = newBlock;
-
-    // Tangential release momentum (slight natural physics, controllable)
-    const swingVx = Math.cos(angle) * s.pendulum.maxAngle * s.pendulum.speed * length * 0.22;
-    s.fallingVelocity = {
-      vx: swingVx,
-      vy: 2.2, // initial downward momentum
-    };
-
-    // Prepare next dessert for the pendulum
-    s.nextDessertType = getRandomDessert(dessert.type);
-
-    soundManager.playDropSwoosh();
-  }, [gameState, isPaused]);
-
   // Particle spawn helpers
-  const spawnParticles = (x: number, y: number, count: number, colors: string[], shape: Particle['shape'] = 'star') => {
+  const spawnParticles = useCallback((x: number, y: number, count: number, colors: string[], shape: Particle['shape'] = 'star') => {
     const p = stateRef.current.particles;
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
@@ -208,9 +129,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         vRot: (Math.random() - 0.5) * 0.2,
       });
     }
-  };
+  }, []);
 
-  const addFloatingText = (x: number, y: number, text: string, color: string = '#F59E0B', subText?: string) => {
+  const addFloatingText = useCallback((x: number, y: number, text: string, color: string = '#F59E0B', subText?: string) => {
     stateRef.current.floatingTexts.push({
       id: `ft-${Math.random()}`,
       x,
@@ -220,15 +141,182 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       color,
       scale: 1.4,
       opacity: 1,
-      vy: -1.6,
+      vy: -1.5,
       life: 0,
     });
-  };
+  }, []);
 
-  // Main game animation loop
+  // Initialize a fresh game
+  const initGame = useCallback(() => {
+    const baseBuilding = getBuildingConfig('brick_apt');
+    const firstBlock: Block = {
+      id: 'base-0',
+      x: (CANVAS_WIDTH - 180) / 2,
+      y: CANVAS_HEIGHT - 120,
+      width: 180,
+      height: 46,
+      buildingType: 'brick_apt',
+      wallColor: baseBuilding.wallColor,
+      wallShadeColor: baseBuilding.wallShadeColor,
+      trimColor: baseBuilding.trimColor,
+      windowColor: baseBuilding.windowColor,
+      isBase: true,
+    };
+
+    stateRef.current = {
+      ...stateRef.current,
+      blocks: [firstBlock],
+      fallingBlock: null,
+      fallingVelocity: { vx: 0, vy: 0 },
+      debris: [],
+      particles: [],
+      floatingTexts: [],
+      pendulum: {
+        anchorX: CANVAS_WIDTH / 2,
+        anchorY: 72,
+        length: 120,
+        angle: 0,
+        maxAngle: 0.85,
+        speed: 0.034,
+        phase: 0,
+      },
+      nextBuilding: getRandomBuilding('brick_apt'),
+      nextBonusItem: undefined,
+      currentBlockWidth: 180,
+      stats: {
+        score: 0,
+        height: 0,
+        perfectCount: 0,
+        maxCombo: 0,
+        currentCombo: 0,
+        isFever: false,
+        feverTimer: 0,
+        inventory: { slow: 1, magnet: 1, widen: 1 },
+        activePowerUps: { slowTimer: 0, magnetCharges: 0 },
+      },
+      cameraY: 0,
+      targetCameraY: 0,
+      screenShake: 0,
+      shakeOffset: { x: 0, y: 0 },
+      isGameOverTriggered: false,
+    };
+
+    onUpdateStats({ ...stateRef.current.stats });
+  }, [onUpdateStats]);
+
+  // Handle game state resets
+  useEffect(() => {
+    if (gameState === 'PLAYING') {
+      initGame();
+    }
+  }, [gameState, initGame]);
+
+  // Power-Up Activation
+  const activatePowerUp = useCallback((type: PowerUpType) => {
+    if (gameState !== 'PLAYING' || isPaused) return;
+    const s = stateRef.current;
+    if (s.isGameOverTriggered) return;
+    if (s.stats.inventory[type] <= 0) return;
+
+    const topBlock = s.blocks[s.blocks.length - 1];
+    if (!topBlock) return;
+
+    if (type === 'slow') {
+      if (s.stats.activePowerUps.slowTimer > 300) return; // avoid accidental double waste
+      s.stats.inventory.slow -= 1;
+      s.stats.activePowerUps.slowTimer = 360; // 6 seconds at 60fps
+      soundManager.playPowerUp('slow');
+      spawnParticles(CANVAS_WIDTH / 2, 160 - s.cameraY, 22, ['#38BDF8', '#0EA5E9', '#E0F2FE'], 'sparkle');
+      addFloatingText(CANVAS_WIDTH / 2, topBlock.y - 30, '⏱️ 緩速時間！', '#0284C7', '吊車擺動減速 6 秒');
+    } else if (type === 'magnet') {
+      s.stats.inventory.magnet -= 1;
+      s.stats.activePowerUps.magnetCharges += 2;
+      soundManager.playPowerUp('magnet');
+      spawnParticles(topBlock.x + topBlock.width / 2, topBlock.y, 24, ['#A78BFA', '#8B5CF6', '#38BDF8'], 'sparkle');
+      addFloatingText(topBlock.x + topBlock.width / 2, topBlock.y - 30, '🧲 磁吸雷射啟動！', '#7C3AED', '自動對齊保護 2 層');
+    } else if (type === 'widen') {
+      if (topBlock.width >= 190 && s.currentBlockWidth >= 190) {
+        addFloatingText(topBlock.x + topBlock.width / 2, topBlock.y - 25, '已達最大寬度！', '#D97706');
+        return;
+      }
+      s.stats.inventory.widen -= 1;
+      const newW = Math.min(190, topBlock.width + 36);
+      const diff = newW - topBlock.width;
+      topBlock.width = newW;
+      topBlock.x = Math.max(12, Math.min(CANVAS_WIDTH - newW - 12, topBlock.x - diff / 2));
+      topBlock.cutLeft = false;
+      topBlock.cutRight = false;
+      s.currentBlockWidth = newW;
+      if (s.fallingBlock) {
+        s.fallingBlock.width = newW;
+      }
+      s.screenShake = 5;
+      soundManager.playPowerUp('widen');
+      spawnParticles(topBlock.x + topBlock.width / 2, topBlock.y + 10, 26, ['#FBBF24', '#F59E0B', '#FFFFFF'], 'star');
+      addFloatingText(topBlock.x + topBlock.width / 2, topBlock.y - 30, `🏗️ 鋼骨擴建 +${Math.round(diff)}px！`, '#D97706');
+    }
+
+    onUpdateStats({
+      ...s.stats,
+      inventory: { ...s.stats.inventory },
+      activePowerUps: { ...s.stats.activePowerUps },
+    });
+  }, [gameState, isPaused, onUpdateStats, spawnParticles, addFloatingText]);
+
+  // Release block from crane
+  const handleDrop = useCallback(() => {
+    if (gameState !== 'PLAYING' || isPaused) return;
+    const s = stateRef.current;
+    if (s.fallingBlock !== null || s.isGameOverTriggered) return;
+
+    const { anchorX, anchorY, length, angle } = s.pendulum;
+    const bobX = anchorX + Math.sin(angle) * length;
+    const bobScreenY = anchorY + Math.cos(angle) * length;
+    const bobWorldY = bobScreenY - s.cameraY;
+
+    const topBlock = s.blocks[s.blocks.length - 1];
+    const blockWidth = topBlock ? topBlock.width : s.currentBlockWidth;
+    s.currentBlockWidth = blockWidth;
+
+    const building = s.nextBuilding;
+    const newBlock: Block = {
+      id: `block-${s.blocks.length}`,
+      x: bobX - blockWidth / 2,
+      y: bobWorldY,
+      width: blockWidth,
+      height: building.height,
+      buildingType: building.type,
+      wallColor: building.wallColor,
+      wallShadeColor: building.wallShadeColor,
+      trimColor: building.trimColor,
+      windowColor: building.windowColor,
+      bonusItem: s.nextBonusItem,
+    };
+
+    s.fallingBlock = newBlock;
+
+    const swingVx = Math.cos(angle) * s.pendulum.maxAngle * s.pendulum.speed * length * 0.2;
+    s.fallingVelocity = {
+      vx: swingVx,
+      vy: 2.5,
+    };
+
+    // Prepare next building floor; every 5th upcoming floor carries a bonus power-up!
+    const nextFloorNum = s.stats.height + 2;
+    s.nextBuilding = getRandomBuilding(building.type);
+    s.nextBonusItem = nextFloorNum % 5 === 0 ? getRandomPowerUp() : undefined;
+
+    soundManager.playDropSwoosh();
+  }, [gameState, isPaused]);
+
+  useImperativeHandle(ref, () => ({
+    activatePowerUp,
+    triggerDrop: handleDrop,
+  }), [activatePowerUp, handleDrop]);
+
+  // Main 60fps Game Loop
   useEffect(() => {
     let animId: number;
-
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -238,37 +326,66 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       animId = requestAnimationFrame(render);
       const s = stateRef.current;
 
-      // When paused, still draw the current frozen frame
+      // Drift background clouds
+      for (const cloud of s.clouds) {
+        cloud.x += cloud.speed;
+        if (cloud.x > CANVAS_WIDTH + 60) cloud.x = -70;
+      }
+      for (const star of s.stars) {
+        star.twinklePhase += 0.04;
+      }
+
       if (!isPaused && gameState === 'PLAYING') {
-        // 1. Update Pendulum physics
-        s.pendulum.phase += s.pendulum.speed;
+        // 1. Slow-mo & Pendulum Update
+        let speedFactor = 1.0;
+        if (s.stats.activePowerUps.slowTimer > 0) {
+          s.stats.activePowerUps.slowTimer -= 1;
+          speedFactor = 0.48;
+          if (s.stats.activePowerUps.slowTimer % 15 === 0 || s.stats.activePowerUps.slowTimer === 0) {
+            onUpdateStats({
+              ...s.stats,
+              inventory: { ...s.stats.inventory },
+              activePowerUps: { ...s.stats.activePowerUps },
+            });
+          }
+        }
+
+        s.pendulum.phase += s.pendulum.speed * speedFactor;
         s.pendulum.angle = s.pendulum.maxAngle * Math.sin(s.pendulum.phase);
 
-        // 2. Update Fever Timer
+        // 2. Fever Timer Update
         if (s.stats.isFever) {
           s.stats.feverTimer -= 1;
           if (s.stats.feverTimer <= 0) {
             s.stats.isFever = false;
-            addFloatingText(CANVAS_WIDTH / 2, s.blocks[s.blocks.length - 1].y - 20, 'Fever Ended', '#9CA3AF');
+            addFloatingText(CANVAS_WIDTH / 2, s.blocks[s.blocks.length - 1].y - 25, '狂熱時間結束', '#94A3B8');
           }
         }
 
-        // 3. Update Falling Block
+        // 3. Falling Floor Physics & Landing Collision
         if (s.fallingBlock) {
-          s.fallingVelocity.vy += 0.72; // Gravity
+          s.fallingVelocity.vy += 0.74;
           s.fallingBlock.y += s.fallingVelocity.vy;
-          s.fallingBlock.x += s.fallingVelocity.vx * 0.45;
+          s.fallingBlock.x += s.fallingVelocity.vx * 0.42;
 
+          // Subtle magnetic homing pull while falling if magnet is active and reasonably close
           const topBlock = s.blocks[s.blocks.length - 1];
+          if (s.stats.activePowerUps.magnetCharges > 0) {
+            const distToTarget = topBlock.x - s.fallingBlock.x;
+            if (Math.abs(distToTarget) < 42) {
+              s.fallingBlock.x += distToTarget * 0.14;
+            }
+          }
+
           const targetLandingY = topBlock.y - s.fallingBlock.height;
 
-          // Check for collision with top of the tower
           if (s.fallingBlock.y >= targetLandingY) {
             const fb = s.fallingBlock;
             const diffX = fb.x - topBlock.x;
-            const PERFECT_TOLERANCE = 3.5;
 
-            // Overlap calculations
+            const hasMagnet = s.stats.activePowerUps.magnetCharges > 0;
+            const PERFECT_TOLERANCE = hasMagnet ? 36 : 3.8;
+
             const overlapLeft = Math.max(fb.x, topBlock.x);
             const overlapRight = Math.min(fb.x + fb.width, topBlock.x + topBlock.width);
             const overlapWidth = overlapRight - overlapLeft;
@@ -280,7 +397,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
                 soundManager.playMiss();
                 s.screenShake = 14;
 
-                // Debris becomes whole falling block
                 s.debris.push({
                   id: `miss-${Math.random()}`,
                   x: fb.x,
@@ -292,23 +408,30 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
                   rotation: 0,
                   vRot: (s.fallingVelocity.vx > 0 ? 0.07 : -0.07),
                   alpha: 1,
-                  dessertType: fb.dessertType,
-                  primaryColor: fb.primaryColor,
-                  secondaryColor: fb.secondaryColor,
-                  accentColor: fb.accentColor,
+                  buildingType: fb.buildingType,
+                  wallColor: fb.wallColor,
+                  wallShadeColor: fb.wallShadeColor,
+                  trimColor: fb.trimColor,
                 });
 
                 s.fallingBlock = null;
-                addFloatingText(CANVAS_WIDTH / 2, targetLandingY - 20, 'MISS!', '#EF4444', overlapWidth < 6 ? '太窄無法支撐！' : '甜點掉落了...');
+                addFloatingText(CANVAS_WIDTH / 2, targetLandingY - 20, 'MISS!', '#EF4444', overlapWidth < 6 && overlapWidth > 0 ? '太窄無法承重！' : '樓層墜落了...');
 
-                // Trigger game over after tumble animation
                 setTimeout(() => {
-                  onGameOver(s.stats);
+                  onGameOver({
+                    ...s.stats,
+                    inventory: { ...s.stats.inventory },
+                    activePowerUps: { ...s.stats.activePowerUps },
+                  });
                 }, 900);
               }
             } else if (Math.abs(diffX) <= PERFECT_TOLERANCE) {
-              // === PERFECT DROP ===
-              // Snap strictly to the top block dimensions
+              // === PERFECT LANDING ===
+              const triggeredMagnet = hasMagnet && Math.abs(diffX) > 3.8;
+              if (hasMagnet) {
+                s.stats.activePowerUps.magnetCharges -= 1;
+              }
+
               fb.x = topBlock.x;
               fb.y = targetLandingY;
               fb.width = topBlock.width;
@@ -317,27 +440,43 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               s.stats.currentCombo += 1;
               s.stats.maxCombo = Math.max(s.stats.maxCombo, s.stats.currentCombo);
 
-              // Consecutive perfects widen the block symmetrically and slightly!
-              let comboBonusText = '';
-              if (s.stats.currentCombo >= 3 && fb.width < 180) {
-                const expand = Math.min(6, 180 - fb.width);
+              // Consecutive perfects symmetrically expand width!
+              let comboBonusText = triggeredMagnet ? '🧲 磁吸精準對齊！' : '';
+              if (s.stats.currentCombo >= 3 && fb.width < 190) {
+                const expand = Math.min(8, 190 - fb.width);
                 if (expand > 0) {
                   fb.width += expand;
-                  fb.x -= expand / 2; // Symmetric expansion to keep tower centered
-                  comboBonusText = `+${expand}px 甜點加寬！`;
+                  fb.x -= expand / 2;
+                  comboBonusText = `+${expand}px 結構加寬！`;
                 }
               }
 
-              // The next swinging dessert strictly matches this newly placed block
+              // Collect bonus crate if floor had one
+              if (fb.bonusItem) {
+                const item = fb.bonusItem;
+                s.stats.inventory[item] += 1;
+                soundManager.playItemGet();
+                const info = POWERUP_INFO[item];
+                addFloatingText(fb.x + fb.width / 2, fb.y - 42, `🎁 獲得 ${info.emoji} ${info.label}!`, info.color);
+                fb.bonusItem = undefined;
+              } else if (s.stats.currentCombo > 0 && s.stats.currentCombo % 4 === 0) {
+                // Award bonus item every 4-combo streak!
+                const reward = getRandomPowerUp();
+                s.stats.inventory[reward] += 1;
+                soundManager.playItemGet();
+                const info = POWERUP_INFO[reward];
+                addFloatingText(fb.x + fb.width / 2, fb.y - 42, `🔥 連擊贈禮 ${info.emoji} ${info.label}+1`, info.color);
+              }
+
               s.currentBlockWidth = fb.width;
 
-              // Fever mode trigger
+              // Fever mode trigger at 5 combo
               if (s.stats.currentCombo >= 5 && !s.stats.isFever) {
                 s.stats.isFever = true;
-                s.stats.feverTimer = 360; // ~6 seconds
+                s.stats.feverTimer = 360;
                 soundManager.playFever();
-                spawnParticles(CANVAS_WIDTH / 2, fb.y, 40, ['#F59E0B', '#EC4899', '#8B5CF6', '#10B981', '#3B82F6']);
-                addFloatingText(CANVAS_WIDTH / 2, fb.y - 40, '🌈 FEVER MODE! 🌈', '#EC4899', '得分雙倍！');
+                spawnParticles(CANVAS_WIDTH / 2, fb.y, 40, ['#F59E0B', '#EC4899', '#8B5CF6', '#10B981', '#38BDF8']);
+                addFloatingText(CANVAS_WIDTH / 2, fb.y - 58, '✨ 摩天狂熱 FEVER! ✨', '#EC4899', '得分雙倍！');
               }
 
               const multiplier = s.stats.isFever ? 2 : 1;
@@ -348,28 +487,33 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               soundManager.playLand(true, s.stats.currentCombo);
               s.screenShake = 4;
 
-              // Visual feedback
-              spawnParticles(fb.x + fb.width / 2, fb.y, 24, ['#FCD34D', '#F472B6', '#34D399', '#60A5FA', '#FFFFFF'], 'sparkle');
-              
+              spawnParticles(
+                fb.x + fb.width / 2,
+                fb.y + fb.height,
+                22,
+                triggeredMagnet ? ['#8B5CF6', '#38BDF8', '#FFFFFF'] : ['#FCD34D', '#38BDF8', '#34D399', '#FFFFFF'],
+                'sparkle'
+              );
+
               const comboRank = s.stats.currentCombo;
               let title = `PERFECT! +${points}`;
-              if (comboRank === 2) title = `SWEET! +${points}`;
-              else if (comboRank === 3) title = `DELICIOUS! +${points}`;
+              if (comboRank === 2) title = `GREAT! +${points}`;
+              else if (comboRank === 3) title = `AMAZING! +${points}`;
               else if (comboRank >= 4) title = `COMBO x${comboRank}! +${points}`;
 
-              addFloatingText(fb.x + fb.width / 2, fb.y - 15, title, '#F59E0B', comboBonusText);
+              addFloatingText(fb.x + fb.width / 2, fb.y - 14, title, triggeredMagnet ? '#7C3AED' : '#D97706', comboBonusText);
 
-              // Add to tower
               s.blocks.push(fb);
               s.fallingBlock = null;
-
-              // Accelerate pendulum slightly with height
-              s.pendulum.speed = Math.min(0.065, 0.034 + s.stats.height * 0.001);
+              s.pendulum.speed = Math.min(0.066, 0.034 + s.stats.height * 0.0009);
 
             } else {
               // === SLICE & OVERHANG FALL ===
+              if (hasMagnet) {
+                s.stats.activePowerUps.magnetCharges -= 1;
+              }
               fb.y = targetLandingY;
-              s.stats.currentCombo = 0; // Combo broken
+              s.stats.currentCombo = 0;
 
               soundManager.playLand(false, 0);
               s.screenShake = 6;
@@ -378,34 +522,39 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               s.stats.score += points;
               s.stats.height += 1;
 
+              // Collect bonus crate even on sliced landing
+              if (fb.bonusItem) {
+                const item = fb.bonusItem;
+                s.stats.inventory[item] += 1;
+                soundManager.playItemGet();
+                const info = POWERUP_INFO[item];
+                addFloatingText(fb.x + fb.width / 2, fb.y - 40, `🎁 獲得 ${info.emoji} ${info.label}!`, info.color);
+                fb.bonusItem = undefined;
+              }
+
               let debrisX = 0;
               let debrisW = 0;
               let debrisVx = 0;
 
               if (fb.x < topBlock.x) {
-                // Left overhang
                 debrisW = topBlock.x - fb.x;
                 debrisX = fb.x;
-                debrisVx = -2.5 - Math.random() * 1.5;
+                debrisVx = -2.4 - Math.random() * 1.4;
 
                 fb.x = topBlock.x;
                 fb.width = overlapWidth;
                 fb.cutLeft = true;
               } else {
-                // Right overhang
                 debrisW = (fb.x + fb.width) - (topBlock.x + topBlock.width);
                 debrisX = topBlock.x + topBlock.width;
-                debrisVx = 2.5 + Math.random() * 1.5;
+                debrisVx = 2.4 + Math.random() * 1.4;
 
-                // fb.x remains fb.x, right edge trimmed to overlapWidth
                 fb.width = overlapWidth;
                 fb.cutRight = true;
               }
 
-              // Next swinging block strictly matches the new trimmed overlap width!
               s.currentBlockWidth = fb.width;
 
-              // Create falling debris slice
               s.debris.push({
                 id: `debris-${Math.random()}`,
                 x: debrisX,
@@ -415,31 +564,31 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
                 vx: debrisVx,
                 vy: -1.8,
                 rotation: 0,
-                vRot: (debrisVx > 0 ? 0.08 : -0.08),
+                vRot: debrisVx > 0 ? 0.08 : -0.08,
                 alpha: 1,
-                dessertType: fb.dessertType,
-                primaryColor: fb.primaryColor,
-                secondaryColor: fb.secondaryColor,
-                accentColor: fb.accentColor,
+                buildingType: fb.buildingType,
+                wallColor: fb.wallColor,
+                wallShadeColor: fb.wallShadeColor,
+                trimColor: fb.trimColor,
               });
 
-              // Slice crumbs
-              spawnParticles(debrisX + debrisW / 2, targetLandingY + fb.height / 2, 14, [fb.primaryColor, fb.secondaryColor, '#D97706'], 'crumb');
-              addFloatingText(fb.x + fb.width / 2, fb.y - 15, `+${points}`, '#78716C');
+              spawnParticles(debrisX + debrisW / 2, targetLandingY + fb.height / 2, 14, [fb.wallColor, '#94A3B8', '#CBD5E1'], 'crumb');
+              addFloatingText(fb.x + fb.width / 2, fb.y - 14, `+${points}`, '#475569');
 
-              // Add to tower
               s.blocks.push(fb);
               s.fallingBlock = null;
-
-              s.pendulum.speed = Math.min(0.065, 0.034 + s.stats.height * 0.001);
+              s.pendulum.speed = Math.min(0.066, 0.034 + s.stats.height * 0.0009);
             }
 
-            // Sync stats to UI HUD
-            onUpdateStats({ ...s.stats });
+            onUpdateStats({
+              ...s.stats,
+              inventory: { ...s.stats.inventory },
+              activePowerUps: { ...s.stats.activePowerUps },
+            });
           }
         }
 
-        // 4. Update Debris Pieces
+        // 4. Update Debris
         for (let i = s.debris.length - 1; i >= 0; i--) {
           const deb = s.debris[i];
           deb.vy += 0.65;
@@ -458,7 +607,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           const p = s.particles[i];
           p.x += p.vx;
           p.y += p.vy;
-          p.vy += 0.15; // particle gravity
+          p.vy += 0.15;
           p.rotation += p.vRot;
           p.life += 1;
           if (p.life >= p.maxLife) {
@@ -472,23 +621,21 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           ft.y += ft.vy;
           ft.scale = Math.max(1, ft.scale - 0.02);
           ft.life += 1;
-          if (ft.life > 20) {
-            ft.opacity -= 0.04;
+          if (ft.life > 22) {
+            ft.opacity -= 0.038;
           }
           if (ft.opacity <= 0) {
             s.floatingTexts.splice(i, 1);
           }
         }
 
-        // 7. Update Camera Tracking
-        // Keep the top of the tower comfortably in the lower half of screen
+        // 7. Camera Tracking
         const topY = s.blocks[s.blocks.length - 1].y;
-        const desiredTopScreenY = CANVAS_HEIGHT * 0.52;
+        const desiredTopScreenY = CANVAS_HEIGHT * 0.54;
         s.targetCameraY = Math.max(0, desiredTopScreenY - topY);
-        // Smooth lerp camera
         s.cameraY += (s.targetCameraY - s.cameraY) * 0.085;
 
-        // 8. Screen Shake decay
+        // 8. Screen Shake Decay
         if (s.screenShake > 0) {
           s.shakeOffset = {
             x: (Math.random() - 0.5) * s.screenShake,
@@ -502,120 +649,151 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
-      // === DRAWING CANVAS ===
+      // === RENDERING ===
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-
       ctx.save();
       ctx.translate(s.shakeOffset.x, s.shakeOffset.y);
 
-      // Background Bakery Atmosphere (Gradually warms up as height ascends)
-      const heightPercent = Math.min(1, s.stats.height / 35);
+      // Sky gradient progression based on building height
+      const h = s.stats.height;
+      const isNightMode = h >= 22;
       const bgGrad = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
-      
+
       if (s.stats.isFever) {
-        // Rainbow fever background
-        bgGrad.addColorStop(0, '#FEF3C7');
-        bgGrad.addColorStop(0.5, '#FCE7F3');
-        bgGrad.addColorStop(1, '#EDE9FE');
+        bgGrad.addColorStop(0, '#1E1B4B');
+        bgGrad.addColorStop(0.5, '#701A75');
+        bgGrad.addColorStop(1, '#F59E0B');
+      } else if (h < 12) {
+        // Crisp morning sky
+        bgGrad.addColorStop(0, '#BAE6FD');
+        bgGrad.addColorStop(0.65, '#E0F2FE');
+        bgGrad.addColorStop(1, '#FEF9C3');
+      } else if (h < 22) {
+        // Golden sunset
+        bgGrad.addColorStop(0, '#FDBA74');
+        bgGrad.addColorStop(0.55, '#FED7AA');
+        bgGrad.addColorStop(1, '#FEF08A');
+      } else if (h < 35) {
+        // Twilight purple
+        bgGrad.addColorStop(0, '#1E1B4B');
+        bgGrad.addColorStop(0.6, '#4C1D95');
+        bgGrad.addColorStop(1, '#F472B6');
       } else {
-        // Morning cream -> Afternoon sakura -> Sunset honey
-        bgGrad.addColorStop(0, '#FDFBF7');
-        bgGrad.addColorStop(0.5, heightPercent > 0.5 ? '#FFF1F2' : '#FFFBEB');
-        bgGrad.addColorStop(1, heightPercent > 0.5 ? '#FED7AA' : '#FEF3C7');
+        // Starry deep night sky
+        bgGrad.addColorStop(0, '#020617');
+        bgGrad.addColorStop(0.6, '#0F172A');
+        bgGrad.addColorStop(1, '#1E293B');
       }
+
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-      // Subtle bakery shelf / wallpaper striping
-      ctx.strokeStyle = 'rgba(180, 83, 9, 0.03)';
-      ctx.lineWidth = 1;
-      for (let y = 0; y < CANVAS_HEIGHT; y += 32) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(CANVAS_WIDTH, y);
-        ctx.stroke();
+      // Twinkling stars at dusk / night / fever
+      if (isNightMode || s.stats.isFever) {
+        for (const star of s.stars) {
+          const alpha = 0.35 + 0.65 * Math.abs(Math.sin(star.twinklePhase));
+          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
 
-      // Height ruler / meter on left side
-      ctx.fillStyle = 'rgba(120, 113, 108, 0.35)';
-      ctx.font = '10px Outfit, sans-serif';
-      const startFloor = Math.max(0, Math.floor((s.cameraY - 20) / 40));
-      for (let f = startFloor; f <= startFloor + 18; f++) {
-        const floorY = (CANVAS_HEIGHT - 90) - f * 40 + s.cameraY;
-        if (floorY > 80 && floorY < CANVAS_HEIGHT - 10) {
+      // Soft drifting clouds
+      if (!isNightMode) {
+        for (const cloud of s.clouds) {
+          ctx.save();
+          ctx.translate(cloud.x, cloud.y);
+          ctx.scale(cloud.scale, cloud.scale);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
           ctx.beginPath();
-          ctx.moveTo(12, floorY);
-          ctx.lineTo(f % 5 === 0 ? 28 : 20, floorY);
+          ctx.arc(0, 0, 16, 0, Math.PI * 2);
+          ctx.arc(16, -4, 20, 0, Math.PI * 2);
+          ctx.arc(34, 0, 15, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      // Slow-mo cool blue atmospheric vignette
+      if (s.stats.activePowerUps.slowTimer > 0) {
+        ctx.fillStyle = 'rgba(14, 165, 233, 0.12)';
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      }
+
+      // Floor Altitude Ruler on left
+      ctx.fillStyle = isNightMode || s.stats.isFever ? 'rgba(255, 255, 255, 0.45)' : 'rgba(51, 65, 85, 0.35)';
+      ctx.strokeStyle = isNightMode || s.stats.isFever ? 'rgba(255, 255, 255, 0.25)' : 'rgba(51, 65, 85, 0.2)';
+      ctx.font = '10px Outfit, sans-serif';
+      const startFloor = Math.max(0, Math.floor((s.cameraY - 20) / 44));
+      for (let f = startFloor; f <= startFloor + 16; f++) {
+        const floorY = (CANVAS_HEIGHT - 120) - f * 44 + s.cameraY;
+        if (floorY > 85 && floorY < CANVAS_HEIGHT - 60) {
+          ctx.beginPath();
+          ctx.moveTo(10, floorY);
+          ctx.lineTo(f % 5 === 0 ? 24 : 16, floorY);
           ctx.stroke();
           if (f % 5 === 0 && f > 0) {
-            ctx.fillText(`${f}F`, 32, floorY + 3);
+            ctx.fillText(`${f}F`, 28, floorY + 3);
           }
         }
       }
 
-      // --- WORLD RENDERING (Subject to Camera Y) ---
+      // --- WORLD RENDERING ---
       ctx.save();
       ctx.translate(0, s.cameraY);
 
-      // Draw all stacked tower blocks
       for (let i = 0; i < s.blocks.length; i++) {
         const b = s.blocks[i];
-        // Only draw visible blocks
-        if (b.y + s.cameraY > -100 && b.y + s.cameraY < CANVAS_HEIGHT + 100) {
-          drawDessertBlock(ctx, b, s.stats.isFever);
+        if (b.y + s.cameraY > -100 && b.y + s.cameraY < CANVAS_HEIGHT + 160) {
+          drawBuildingBlock(ctx, b, CANVAS_WIDTH, s.stats.isFever, isNightMode);
         }
       }
 
-      // Draw currently falling block
       if (s.fallingBlock) {
-        drawDessertBlock(ctx, s.fallingBlock, s.stats.isFever);
+        drawBuildingBlock(ctx, s.fallingBlock, CANVAS_WIDTH, s.stats.isFever, isNightMode);
       }
 
-      // Draw falling debris pieces
       for (let i = 0; i < s.debris.length; i++) {
         drawDebrisPiece(ctx, s.debris[i]);
       }
 
-      // Draw particles
+      // Particles
       for (let i = 0; i < s.particles.length; i++) {
-        const p = s.particles[i];
+        const pt = s.particles[i];
         ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.rotation);
-        ctx.globalAlpha = 1 - p.life / p.maxLife;
-        ctx.fillStyle = p.color;
+        ctx.translate(pt.x, pt.y);
+        ctx.rotate(pt.rotation);
+        ctx.globalAlpha = 1 - pt.life / pt.maxLife;
+        ctx.fillStyle = pt.color;
 
-        if (p.shape === 'star') {
-          // 4-point star
+        if (pt.shape === 'star') {
           ctx.beginPath();
-          ctx.moveTo(0, -p.size);
-          ctx.lineTo(p.size * 0.3, -p.size * 0.3);
-          ctx.lineTo(p.size, 0);
-          ctx.lineTo(p.size * 0.3, p.size * 0.3);
-          ctx.lineTo(0, p.size);
-          ctx.lineTo(-p.size * 0.3, p.size * 0.3);
-          ctx.lineTo(-p.size, 0);
-          ctx.lineTo(-p.size * 0.3, -p.size * 0.3);
+          ctx.moveTo(0, -pt.size);
+          ctx.lineTo(pt.size * 0.3, -pt.size * 0.3);
+          ctx.lineTo(pt.size, 0);
+          ctx.lineTo(pt.size * 0.3, pt.size * 0.3);
+          ctx.lineTo(0, pt.size);
+          ctx.lineTo(-pt.size * 0.3, pt.size * 0.3);
+          ctx.lineTo(-pt.size, 0);
+          ctx.lineTo(-pt.size * 0.3, -pt.size * 0.3);
           ctx.closePath();
           ctx.fill();
-        } else if (p.shape === 'crumb') {
-          ctx.beginPath();
-          ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2);
-          ctx.fill();
+        } else if (pt.shape === 'crumb') {
+          ctx.fillRect(-pt.size / 2, -pt.size / 2, pt.size, pt.size);
         } else {
-          // Sparkle diamond
           ctx.beginPath();
-          ctx.moveTo(0, -p.size * 1.3);
-          ctx.lineTo(p.size * 0.8, 0);
-          ctx.lineTo(0, p.size * 1.3);
-          ctx.lineTo(-p.size * 0.8, 0);
+          ctx.moveTo(0, -pt.size * 1.3);
+          ctx.lineTo(pt.size * 0.8, 0);
+          ctx.lineTo(0, pt.size * 1.3);
+          ctx.lineTo(-pt.size * 0.8, 0);
           ctx.closePath();
           ctx.fill();
         }
         ctx.restore();
       }
 
-      // Draw floating score / combo texts
+      // Floating texts
       for (let i = 0; i < s.floatingTexts.length; i++) {
         const ft = s.floatingTexts[i];
         ctx.save();
@@ -623,104 +801,137 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.font = 'bold 15px "M PLUS Rounded 1c", sans-serif';
         ctx.textAlign = 'center';
 
-        // Text shadow
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-        ctx.fillText(ft.text, ft.x, ft.y + 1);
-
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+        ctx.fillText(ft.text, ft.x, ft.y + 1.5);
         ctx.fillStyle = ft.color;
         ctx.fillText(ft.text, ft.x, ft.y);
 
         if (ft.subText) {
           ctx.font = 'bold 11px "M PLUS Rounded 1c", sans-serif';
-          ctx.fillStyle = '#D97706';
-          ctx.fillText(ft.subText, ft.x, ft.y + 14);
+          ctx.fillStyle = isNightMode ? '#FDE68A' : '#B45309';
+          ctx.fillText(ft.subText, ft.x, ft.y + 15);
         }
         ctx.restore();
       }
 
-      ctx.restore(); // End of camera-translated world
+      ctx.restore(); // End world space
 
-      // --- SCREEN-SPACE RENDERING (HUD & Pendulum Crane) ---
-
-      // 1. Draw Pendulum Top Crane Mechanism
+      // --- SCREEN SPACE: CONSTRUCTION CRANE & SWINGING FLOOR ---
       const p = s.pendulum;
       const craneAnchorX = p.anchorX;
       const craneAnchorY = p.anchorY;
-
-      // Decorative bakery wooden beam at top
-      ctx.fillStyle = '#78350F';
-      drawRoundedRect(ctx, craneAnchorX - 45, 0, 90, 16, 4);
-      ctx.fill();
-
-      // Golden brass pulley wheel
-      ctx.fillStyle = '#F59E0B';
-      ctx.beginPath();
-      ctx.arc(craneAnchorX, craneAnchorY - 35, 11, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#D97706';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      // Brass center bolt
-      ctx.fillStyle = '#78350F';
-      ctx.beginPath();
-      ctx.arc(craneAnchorX, craneAnchorY - 35, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Pendulum string / suspension cable
       const bobX = craneAnchorX + Math.sin(p.angle) * p.length;
       const bobY = craneAnchorY + Math.cos(p.angle) * p.length;
 
-      ctx.strokeStyle = '#92400E';
-      ctx.lineWidth = 2.2;
+      // Construction Steel Girder Beam at top
+      ctx.fillStyle = '#F59E0B';
+      drawRoundedRect(ctx, craneAnchorX - 58, 0, 116, 15, 3);
+      ctx.fill();
+      // Hazard diagonal stripes on beam
+      ctx.fillStyle = '#1E293B';
+      for (let sx = craneAnchorX - 48; sx < craneAnchorX + 48; sx += 16) {
+        ctx.fillRect(sx, 2, 6, 11);
+      }
+
+      // Steel pulley wheel
+      ctx.fillStyle = '#475569';
       ctx.beginPath();
-      ctx.moveTo(craneAnchorX, craneAnchorY - 24);
+      ctx.arc(craneAnchorX, craneAnchorY - 34, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#F59E0B';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.fillStyle = '#E2E8F0';
+      ctx.beginPath();
+      ctx.arc(craneAnchorX, craneAnchorY - 34, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Crane steel cable
+      ctx.strokeStyle = s.stats.activePowerUps.slowTimer > 0 ? '#38BDF8' : '#334155';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(craneAnchorX, craneAnchorY - 23);
       ctx.lineTo(bobX, bobY);
       ctx.stroke();
 
-      // Suspension ring and level clamp holding the horizontal dessert
-      ctx.strokeStyle = '#D97706';
+      // Magnetic Alignment Laser Guides (when Magnet Power-Up is active!)
+      if (s.stats.activePowerUps.magnetCharges > 0 && !s.fallingBlock && gameState === 'PLAYING') {
+        const currentTop = s.blocks[s.blocks.length - 1];
+        const w = currentTop ? currentTop.width : s.currentBlockWidth;
+        const leftX = bobX - w / 2;
+        const rightX = bobX + w / 2;
+        const targetScreenY = currentTop ? currentTop.y + s.cameraY : CANVAS_HEIGHT - 120;
+
+        ctx.save();
+        ctx.setLineDash([5, 5]);
+        ctx.strokeStyle = 'rgba(139, 92, 246, 0.75)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(leftX, bobY + 42);
+        ctx.lineTo(leftX, targetScreenY);
+        ctx.moveTo(rightX, bobY + 42);
+        ctx.lineTo(rightX, targetScreenY);
+        ctx.stroke();
+
+        // Highlight target zone on top block
+        if (currentTop) {
+          ctx.setLineDash([]);
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(currentTop.x - 1, targetScreenY - 1, currentTop.width + 2, 4);
+        }
+        ctx.restore();
+      }
+
+      // Crane spreader bar & steel hooks
+      ctx.strokeStyle = '#F59E0B';
       ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.arc(bobX, bobY - 6, 4, 0, Math.PI * 2);
+      ctx.arc(bobX, bobY - 7, 4, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.fillStyle = '#B45309';
-      drawRoundedRect(ctx, bobX - 10, bobY - 2, 20, 4, 2);
-      ctx.fill();
+      const currentTop = s.blocks[s.blocks.length - 1];
+      const blockWidth = currentTop ? currentTop.width : s.currentBlockWidth;
+      s.currentBlockWidth = blockWidth;
 
-      // 2. Draw Dessert suspended on Pendulum (strictly horizontal and size-matched)
+      // Spreader beam wires
       if (!s.fallingBlock && gameState === 'PLAYING') {
-        const nextDessert = s.nextDessertType;
-        const currentTop = s.blocks[s.blocks.length - 1];
-        const blockWidth = currentTop ? currentTop.width : s.currentBlockWidth;
-        s.currentBlockWidth = blockWidth;
+        const hookSpan = Math.min(blockWidth * 0.42, 48);
+        ctx.strokeStyle = '#64748B';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(bobX, bobY - 3);
+        ctx.lineTo(bobX - hookSpan, bobY + 2);
+        ctx.moveTo(bobX, bobY - 3);
+        ctx.lineTo(bobX + hookSpan, bobY + 2);
+        ctx.stroke();
 
+        const nextB = s.nextBuilding;
         const previewBlock: Block = {
           id: 'swinging-preview',
           x: bobX - blockWidth / 2,
           y: bobY,
           width: blockWidth,
-          height: nextDessert.height,
-          dessertType: nextDessert.type,
-          primaryColor: nextDessert.primaryColor,
-          secondaryColor: nextDessert.secondaryColor,
-          accentColor: nextDessert.accentColor,
+          height: nextB.height,
+          buildingType: nextB.type,
+          wallColor: nextB.wallColor,
+          wallShadeColor: nextB.wallShadeColor,
+          trimColor: nextB.trimColor,
+          windowColor: nextB.windowColor,
+          bonusItem: s.nextBonusItem,
         };
 
-        // Draw preview block strictly horizontal (no tilt/rotation)
-        drawDessertBlock(ctx, previewBlock, s.stats.isFever);
+        // Strictly horizontal swinging floor
+        drawBuildingBlock(ctx, previewBlock, CANVAS_WIDTH, s.stats.isFever, isNightMode);
       }
 
-      ctx.restore(); // Restore shake offset
+      ctx.restore();
     };
 
     animId = requestAnimationFrame(render);
-
-    return () => {
-      cancelAnimationFrame(animId);
-    };
-  }, [gameState, isPaused, onGameOver, onUpdateStats]);
+    return () => cancelAnimationFrame(animId);
+  }, [gameState, isPaused, onGameOver, onUpdateStats, spawnParticles, addFloatingText]);
 
   return (
     <div
@@ -736,4 +947,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       />
     </div>
   );
-};
+});
+
+GameCanvas.displayName = 'GameCanvas';
